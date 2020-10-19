@@ -178,7 +178,7 @@ namespace UnityStandardAssets.Vehicles.Motobike
 
         void FixedUpdate()
         {
-            BalanceAngle = PosNegAngleZ(transform.up);
+            BalanceAngle = PosNegAngle(transform.up);
             float speed = m_Rigidbody.velocity.magnitude;
             Vector3 pos = transform.position;
 
@@ -241,9 +241,8 @@ namespace UnityStandardAssets.Vehicles.Motobike
         }
 
         //finds euler angle between input vector (transform.up) and global normal (Vector.up)
-        public float PosNegAngleZ(Vector3 a1)
+        public float PosNegAngle(Vector3 a1)
         {
-            a1.x = a1.y = 0;
             float angle = Vector3.Angle(Vector3.up, a1);
             float sign = Mathf.Sign(Vector3.Dot(Vector3.up, -Vector3.Cross(a1, transform.forward)));
             return angle * sign;
