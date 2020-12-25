@@ -28,7 +28,8 @@ namespace UnityStandardAssets.Vehicles.Motobike
         [SerializeField] private float m_MaximumSteerAngle;
         [Range(0, 1)] [SerializeField] private float m_SteerHelper; // 0 is raw physics , 1 the car will grip in the direction it is facing
         [Range(0, 1)] [SerializeField] private float m_TractionControl; // 0 is no traction control, 1 is full interference
-        [Range(0, 40)] [SerializeField] private float deadzone;
+        [Range(0, 4)] [SerializeField] private float deadzone;
+        [Range(1, 100)] [SerializeField] private float lean;
         [SerializeField] private float m_FullTorqueOverBackWheel;
         [SerializeField] private float m_ReverseTorque;
         [SerializeField] private float m_MaxHandbrakeTorque;
@@ -46,6 +47,7 @@ namespace UnityStandardAssets.Vehicles.Motobike
         private Vector3 m_EulerAngleVelocity;
         private Vector3 inertiaTensor;
         private float m_SteerAngle;
+        private float ground_dist;
         private int m_GearNum;
         private float m_GearFactor;
         private float m_OldRotation;
@@ -76,6 +78,9 @@ namespace UnityStandardAssets.Vehicles.Motobike
 
             m_Rigidbody = GetComponent<Rigidbody>();
             m_CurrentTorque = m_FullTorqueOverBackWheel - (m_TractionControl * m_FullTorqueOverBackWheel);
+
+            ResetInertiaTensorZRot(m_Rigidbody);
+            m_Rigidbody.ResetInertiaTensor();
         }
 
 
@@ -151,7 +156,7 @@ namespace UnityStandardAssets.Vehicles.Motobike
             handbrake = Mathf.Clamp(handbrake, 0, 1);
 
             //Set the steer on the front wheel.
-            //Assuming that wheels 0 is the front wheel.
+            //Assuming that wheel 0 is the front wheel.
             m_SteerAngle = steering * m_MaximumSteerAngle;
             m_WheelColliders[0].steerAngle = m_SteerAngle;
 
@@ -160,7 +165,7 @@ namespace UnityStandardAssets.Vehicles.Motobike
             CapSpeed();
 
             //Set the handbrake.
-            //Assuming that wheels 1 is the rear wheel.
+            //Assuming that wheel 1 is the rear wheel.
             if (handbrake > 0f)
             {
                 var hbTorque = handbrake * m_MaxHandbrakeTorque;
@@ -171,83 +176,82 @@ namespace UnityStandardAssets.Vehicles.Motobike
             CalculateRevs();
             GearChanging();
 
+            BikeControl();
+
             AddDownForce();
             //CheckForWheelSpin();
             TractionControl();
         }
 
-        void FixedUpdate()
+        public void BikeControl()
         {
-            BalanceAngle = PosNegAngle(transform.up);
+            BalanceAngle = PosNegAngle(); //needs to be updated to allow banked turns (Vector3.up -> plane normal vector)
             float speed = m_Rigidbody.velocity.magnitude;
-            Vector3 pos = transform.position;
 
-            //Resets inertia tensor and sets its z rot=0
-            ResetInertiaTensorZRot(m_Rigidbody);
-            m_Rigidbody.ResetInertiaTensor();
-
-            Debug.Log(BalanceAngle);
+            //ground_dist = RaycastHit.distance; This needs work, also there is a bug where the bike    
+            //Debug.Log(BalanceAngle);
             //Debug.Log(m_SteerAngle);
 
-
-            //Lean into corner; removes any balance constraints, adds torque; balance angle approaches steering angle at rate proportional to speed.
-            if (Mathf.Abs(m_SteerAngle) > Mathf.Abs(BalanceAngle) && Mathf.Abs(m_SteerAngle) > deadzone)
+            //Lean into corner; removes any constraints, adds torque; balance angle approaches steering angle at rate proportional to speed. //When grounded.
+            if (Mathf.Abs(m_SteerAngle) > Mathf.Abs(BalanceAngle) && Mathf.Abs(m_SteerAngle) > deadzone) //&& ground_dist < 0.2)
             {
                 m_Rigidbody.constraints = RigidbodyConstraints.None;
-                m_Rigidbody.AddTorque(transform.forward * -m_SteerAngle * (50+2*speed));
+                m_Rigidbody.AddTorque(transform.forward * -lean * m_SteerAngle * speed);
             }
 
-            //Handles boundary case where it would otherwise accelerate past m_MaxSteerAngle (when at desired angle and decrease width of required deadzone).
-            if (Mathf.Abs(m_SteerAngle) == Mathf.Abs(m_MaximumSteerAngle) || m_SteerAngle == BalanceAngle || Mathf.Abs(m_SteerAngle) == 0 && Mathf.Abs(BalanceAngle) <8)
-            {
-                //Resets angular v in z and maintains rotation in z
-                Vector3 anglv = m_Rigidbody.angularVelocity;
-                anglv.z = 0;
-                m_Rigidbody.angularVelocity = anglv;
-                Quaternion rot = m_Rigidbody.rotation;
-                rot.z = m_SteerAngle;
-                m_Rigidbody.rotation = rot;
-            }
-
-            //Balance out of corner;
-            if (Mathf.Abs(m_SteerAngle) < Mathf.Abs(BalanceAngle) && Mathf.Abs(BalanceAngle)>deadzone)
+            //Balance out of corner //when grounded
+            if (Mathf.Abs(BalanceAngle) > Mathf.Abs(m_SteerAngle) && Mathf.Abs(BalanceAngle) > deadzone+10 && Mathf.Abs(BalanceAngle) < m_MaximumSteerAngle + 45)// && ground_dist < 0.2)
             {
                 m_Rigidbody.constraints = RigidbodyConstraints.None;
-                m_Rigidbody.AddTorque(transform.forward * 50 * BalanceAngle);
+                m_Rigidbody.AddTorque(transform.forward * 40 * BalanceAngle);
             }
 
-            if (Mathf.Abs(BalanceAngle)<deadzone && Mathf.Abs(m_SteerAngle)<deadzone)
+            //Deadzone
+            if (Mathf.Abs(m_SteerAngle) < deadzone && Mathf.Abs(BalanceAngle) < deadzone)
             {
-                //constrains y,z rot deadzone degrees from global up (plane normal vector)**NEEDS WORK**
                 m_Rigidbody.constraints = RigidbodyConstraints.FreezeRotationY | RigidbodyConstraints.FreezeRotationZ;
-                
-                //resets z angular v and rotation.
-                Vector3 anglv = m_Rigidbody.angularVelocity;
-                anglv.z = 0;
-                m_Rigidbody.angularVelocity = anglv;
-                Quaternion rot = m_Rigidbody.rotation;
-                rot.z = 0;
-                m_Rigidbody.rotation = rot;
+                //FreezeZAngularV();
             }
-          
+
+            //prevents over rotation past m_MaxSteerAngle, desired angle
+            if (m_MaximumSteerAngle - Mathf.Abs(BalanceAngle) < 4 || Mathf.Abs(m_SteerAngle) == Mathf.Abs(BalanceAngle))
+            {
+                FreezeZAngularV();
+            }
         }
 
+        //Returns angle between motobike's x-y plane rotation and +ve Z-axis, when not upside down.
+        public float PosNegAngle()
+        {
+            if (Vector3.Dot(Vector3.up, transform.up) > 0)
+            {
+                //cross transform.right with transform.forward without yaxis to get vector in x-y plane (zRot)
+                Vector3 LocalzAxis = transform.forward;
+                LocalzAxis.y = 0;
+                Vector3 zRot = -Vector3.Cross(transform.right, LocalzAxis);
+
+                float angle = Vector3.Angle(zRot, Vector3.up);
+                float sign = Mathf.Sign(Vector3.Dot(Vector3.up, -Vector3.Cross(zRot, transform.forward)));
+                return angle * sign;
+            }
+            else return 0;
+        }
+
+        public void FreezeZAngularV()
+        {
+            //Resets z angular velocity
+            Vector3 anglv = m_Rigidbody.angularVelocity;
+            anglv.z = 0;
+            m_Rigidbody.angularVelocity = anglv;
+        }
+
+        //resets inertia tensor z rotation of rigidbody.
         public void ResetInertiaTensorZRot(Rigidbody rigidbody)
         {
-            //resets inertia tensor z rotation of rigidbody.
             Quaternion inertialrotz = rigidbody.inertiaTensorRotation;
             inertialrotz.z = 0;
             rigidbody.inertiaTensorRotation = inertialrotz;
         }
-
-        //finds euler angle between input vector (transform.up) and global normal (Vector.up)
-        public float PosNegAngle(Vector3 a1)
-        {
-            float angle = Vector3.Angle(Vector3.up, a1);
-            float sign = Mathf.Sign(Vector3.Dot(Vector3.up, -Vector3.Cross(a1, transform.forward)));
-            return angle * sign;
-        }
-
 
         private void CapSpeed()
         {
